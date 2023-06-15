@@ -52,7 +52,7 @@ pub fn broadcast<T: Clone>(buffer: usize) -> (BroadcastSender<T>, BroadcastRecei
 // =============== TOKIO =============== //
 
 /// Tokio-based primitives
-// #[cfg(feature = "tokio_runtime")]
+#[cfg(feature = "tokio_runtime")]
 pub mod tokio_primatives {
     use std::future::Future;
 
@@ -135,7 +135,7 @@ pub mod tokio_primatives {
     // test macro
     pub use tokio::test;
 }
-// #[cfg(feature = "tokio_runtime")]
+#[cfg(feature = "tokio_runtime")]
 pub use tokio_primatives::*;
 
 // =============== ASYNC-STD =============== //
@@ -197,3 +197,118 @@ pub mod async_std_primatives {
 }
 #[cfg(feature = "async_std_runtime")]
 pub use async_std_primatives::*;
+
+/// Tokio-based primitives
+// #[cfg(feature = "wasm_runtime")]
+pub mod wasm_primitives {
+    use std::future::Future;
+
+    /// Represents a task JoinHandle
+    pub struct JoinHandle<T> {
+        remote_handle: Option<futures::future::RemoteHandle<T>>,
+    }
+
+    impl<T> JoinHandle<T> {
+        #[allow(missing_docs)]
+        pub fn abort(&self) {
+        }
+
+        #[allow(missing_docs)]
+        pub fn is_finished(&self) -> bool {
+            false
+        }
+    }
+
+    impl<T: 'static> Future for JoinHandle<T> {
+        type Output = T;
+
+        fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+            if let Some(remote_handle) = self.remote_handle.as_mut() {
+                remote_handle.poll_unpin(cx)
+            } else {
+                std::task::Poll::Pending
+            }
+        }
+    }
+
+    /// A duration of time
+    pub type Duration = tokio::time::Duration;
+
+    /// An instant measured on system time
+    pub type Instant = wasmtimer::std::Instant;
+
+    /// Sleep the task for a duration of time
+    pub async fn sleep(dur: super::Duration) {
+        wasmtimer::tokio::sleep(dur).await;
+    }
+
+    /// Spawn a task on the executor runtime
+    pub fn spawn<F>(future: F) -> JoinHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        spawn_named(None, future)
+    }
+
+    /// Spawn a (possibly) named task on the executor runtime
+    pub fn spawn_named<F>(name: Option<&str>, future: F) -> JoinHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        #[cfg(feature = "tracing")]
+        {
+            let mut builder = tokio::task::Builder::new();
+            if let Some(name) = name {
+                builder = builder.name(name);
+            }
+            builder.spawn(future).expect("Tokio task spawn failed")
+        }
+
+        #[cfg(not(feature = "tracing"))]
+        {
+            let _ = name;
+            let (remote, remote_handle) = future.remote_handle();
+            wasm_bindgen_futures::spawn_local(remote);
+            JoinHandle { remote_handle: Some(remote_handle) }
+        }
+    }
+
+    /// Execute the future up to a timeout
+    ///
+    /// * `dur`: The duration of time to allow the future to execute for
+    /// * `future`: The future to execute
+    ///
+    /// Returns [Ok(_)] if the future succeeded before the timeout, [Err(super::Timeout)] otherwise
+    pub async fn timeout<F, T>(dur: super::Duration, future: F) -> Result<T, super::Timeout>
+    where
+        F: Future<Output = T>,
+    {
+        wasmtimer::tokio::timeout(dur, future)
+            .await
+            .map_err(|_| super::Timeout)
+    }
+
+    macro_rules! select {
+        ($($tokens:tt)*) => {{
+            tokio::select! {
+                // Biased ensures that we poll the ports in the order they appear, giving
+                // priority to our message reception operations. See:
+                // https://docs.rs/tokio/latest/tokio/macro.select.html#fairness
+                // for more information
+                biased;
+
+                $( $tokens )*
+            }
+        }}
+    }
+
+    use futures::FutureExt;
+    pub(crate) use select;
+
+    // test macro
+    pub use tokio::test;
+}
+// #[cfg(feature = "wasm_runtime")]
+pub use wasm_primitives::*;
